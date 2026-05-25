@@ -1,0 +1,7 @@
+/* Prevent default Vite styling conflicts */
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  background-color: #030307;
+  min-height: 100vh;
+}
