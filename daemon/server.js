@@ -305,6 +305,16 @@ async function shutdown() {
 }
 
 const PORT = config.settings.apiPort || 3001;
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`\n[CRITICAL ERROR] Port ${PORT} is already in use by another process.`);
+    console.error(`Please verify if another instance of the VPN daemon is running, or modify 'apiPort' in 'daemon/config.json'.`);
+  } else {
+    console.error(`\n[CRITICAL ERROR] Control Panel API Server error:`, err);
+  }
+  process.exit(1);
+});
+
 server.listen(PORT, () => {
   console.log(`Control Panel API Server running on port ${PORT}`);
 });

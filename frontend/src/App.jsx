@@ -498,7 +498,7 @@ export default function App() {
                         {node.host}:{node.port}
                         {node.username && (
                           <span className="node-auth-icon" title={`Authentication enabled (User: ${node.username})`}>
-                            🔑 {node.username}
+                            🔑 Auth
                           </span>
                         )}
                       </p>

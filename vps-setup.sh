@@ -78,18 +78,30 @@ EOF
 # Install Python SOCKS5 Proxy Script
 echo -e "\n${BLUE}Step 4: Creating local SOCKS5 proxy server with authentication...${NC}"
 
-# Generate random credentials
-SOCKS_USER="vpn_user_$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 8)"
-SOCKS_PASS="$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 16)"
+# Generate random credentials securely without hanging pipes
+SOCKS_USER="vpn_user_$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 8)"
+SOCKS_PASS="$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 16)"
+
+# Save credentials in a secure env file restricted to root (chmod 600)
+cat > /etc/vpn-socks5.env <<EOF
+SOCKS_USER=$SOCKS_USER
+SOCKS_PASS=$SOCKS_PASS
+EOF
+chmod 600 /etc/vpn-socks5.env
 
 cat > /usr/local/bin/vps_socks5.py <<'EOF'
 import socket
 import select
 import threading
 import sys
+import os
 
-def handle_client(client_socket, username, password):
+def log_message(msg):
+    print(msg, flush=True)
+
+def handle_client(client_socket, username, password, client_addr):
     try:
+        log_message(f"Connection accepted from {client_addr[0]}:{client_addr[1]}")
         # SOCKS5 Handshake
         header = client_socket.recv(2)
         if len(header) < 2:
@@ -121,18 +133,21 @@ def handle_client(client_socket, username, password):
                 client_socket.close()
                 return
             
-            uname = client_socket.recv(ulen).decode('utf-8', errors='ignore')
+            # Strict UTF-8 decoding to fail early on malformed credentials
+            uname = client_socket.recv(ulen).decode('utf-8')
             plen_buf = client_socket.recv(1)
             if not plen_buf:
                 client_socket.close()
                 return
             plen = plen_buf[0]
-            passwd = client_socket.recv(plen).decode('utf-8', errors='ignore')
+            passwd = client_socket.recv(plen).decode('utf-8')
             
             if uname == username and passwd == password:
                 client_socket.sendall(bytes([1, 0])) # Success
+                log_message(f"Auth success for user: {uname}")
             else:
                 client_socket.sendall(bytes([1, 1])) # Failure
+                log_message(f"Auth failure for user: {uname}")
                 client_socket.close()
                 return
         else:
@@ -178,6 +193,7 @@ def handle_client(client_socket, username, password):
         dest_port = int.from_bytes(port_buf, 'big')
 
         # Connect to destination
+        log_message(f"Routing traffic to {dest_ip}:{dest_port}")
         dest_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         dest_socket.settimeout(10)
         try:
@@ -188,6 +204,7 @@ def handle_client(client_socket, username, password):
             client_socket.sendall(bytes([5, 0, 0, 1]) + bind_ip_bytes + bind_port_bytes)
         except Exception:
             client_socket.sendall(bytes([5, 5, 0, 1, 0, 0, 0, 0, 0, 0]))
+            log_message(f"Failed to connect to destination {dest_ip}:{dest_port}")
             client_socket.close()
             return
 
@@ -201,7 +218,7 @@ def handle_client(client_socket, username, password):
                     data = src.recv(8192)
                     if not data:
                         break
-                      dst.sendall(data)
+                    dst.sendall(data)
             except Exception:
                 pass
             finally:
@@ -215,33 +232,35 @@ def handle_client(client_socket, username, password):
         t1.start()
         t2.start()
 
-    except Exception:
+    except Exception as e:
+        log_message(f"Error handling connection: {e}")
         try: client_socket.close()
         except Exception: pass
 
 def main():
     if len(sys.argv) < 3:
-        print("Usage: python vps_socks5.py <bind_ip> <bind_port> [<username> <password>]")
+        print("Usage: python vps_socks5.py <bind_ip> <bind_port>")
         sys.exit(1)
     bind_ip = sys.argv[1]
     bind_port = int(sys.argv[2])
     
-    username = sys.argv[3] if len(sys.argv) >= 5 else None
-    password = sys.argv[4] if len(sys.argv) >= 5 else None
+    # Read credentials securely from environment variables populated by systemd EnvironmentFile
+    username = os.environ.get('SOCKS_USER')
+    password = os.environ.get('SOCKS_PASS')
     
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind((bind_ip, bind_port))
     server.listen(256)
     if username and password:
-        print(f"SOCKS5 proxy listening on {bind_ip}:{bind_port} with authentication enabled")
+        log_message(f"SOCKS5 proxy listening on {bind_ip}:{bind_port} with authentication enabled")
     else:
-        print(f"SOCKS5 proxy listening on {bind_ip}:{bind_port} (no authentication)")
+        log_message(f"SOCKS5 proxy listening on {bind_ip}:{bind_port} (no authentication)")
         
     while True:
         try:
             client, addr = server.accept()
-            t = threading.Thread(target=handle_client, args=(client, username, password))
+            t = threading.Thread(target=handle_client, args=(client, username, password, addr))
             t.daemon = True
             t.start()
         except KeyboardInterrupt:
@@ -265,8 +284,10 @@ Requires=wg-quick@wg0.service
 
 [Service]
 Type=simple
+# Load credentials from root-restricted environment file
+EnvironmentFile=/etc/vpn-socks5.env
 # Bind to WireGuard internal IP so it is only accessible via the tunnel
-ExecStart=/usr/bin/python3 /usr/local/bin/vps_socks5.py $SUBNET_IP $SOCKS_PORT $SOCKS_USER $SOCKS_PASS
+ExecStart=/usr/bin/python3 /usr/local/bin/vps_socks5.py $SUBNET_IP $SOCKS_PORT
 Restart=always
 RestartSec=5
 
@@ -303,9 +324,10 @@ AllowedIPs = $SUBNET_IP/32, 10.0.${NODE_ID}.0/24
 PersistentKeepalive = 25
 EOF
 echo -e "${NC}--------------------------------------------------"
-echo -e "SOCKS5 Proxy Credentials for Dashboard:"
+echo -e "SOCKS5 Proxy Credentials for Dashboard (saved securely in /etc/vpn-socks5.env):"
 echo -e "Username: ${GREEN}$SOCKS_USER${NC}"
 echo -e "Password: ${GREEN}$SOCKS_PASS${NC}"
 echo -e "Port: ${GREEN}$SOCKS_PORT${NC}"
 echo -e "--------------------------------------------------"
+
 
