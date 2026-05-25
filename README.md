@@ -1,4 +1,4 @@
-# ▲ Antigravity Custom Multi-Node VPN Client
+# ▲ Custom Multi-Node VPN Client
 
 An intelligent, multi-hop SOCKS5 routing gateway over WireGuard with **TCP Handshake Racing** (Happy Eyeballs across multiple geographic nodes) and a premium glassmorphic dashboard.
 
