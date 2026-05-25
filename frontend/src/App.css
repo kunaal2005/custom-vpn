@@ -566,6 +566,20 @@ body {
 .node-latency.poor { color: var(--clr-danger); background: rgba(239, 68, 68, 0.08); }
 .node-latency.offline { color: var(--clr-text-muted); background: rgba(255, 255, 255, 0.03); }
 
+.node-auth-icon {
+  margin-left: 0.75rem;
+  background: rgba(139, 92, 246, 0.12);
+  color: #a78bfa;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  border: 1px solid rgba(139, 92, 246, 0.15);
+}
+
 /* BUTTONS */
 .btn {
   padding: 0.5rem 1rem;

@@ -51,6 +51,115 @@ const DEFAULT_CONFIG = {
 
 let currentConfig = null;
 
+// Helper validation function for node data
+function validateNodeData(node, isUpdate = false) {
+  const errors = [];
+  
+  if (!isUpdate || node.name !== undefined) {
+    if (typeof node.name !== 'string' || node.name.trim().length === 0 || node.name.length > 50) {
+      errors.push("Invalid 'name': must be a non-empty string under 50 characters.");
+    }
+  }
+  
+  if (!isUpdate || node.host !== undefined) {
+    // Validate IPv4, IPv6, or domain format
+    const hostRegex = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$|^(([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.)*([A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9\-]*[A-Za-z0-9])$/;
+    if (typeof node.host !== 'string' || !hostRegex.test(node.host)) {
+      errors.push("Invalid 'host': must be a valid IP address or domain name.");
+    }
+  }
+  
+  if (!isUpdate || node.port !== undefined) {
+    const port = parseInt(node.port);
+    if (isNaN(port) || port < 1 || port > 65535) {
+      errors.push("Invalid 'port': must be a number between 1 and 65535.");
+    }
+  }
+  
+  if (!isUpdate || node.country !== undefined) {
+    if (typeof node.country !== 'string' || node.country.trim().length === 0 || node.country.length > 50) {
+      errors.push("Invalid 'country': must be a non-empty string under 50 characters.");
+    }
+  }
+  
+  if (node.flag !== undefined) {
+    if (typeof node.flag !== 'string' || node.flag.length > 10) {
+      errors.push("Invalid 'flag': must be a string representing flag emoji.");
+    }
+  }
+
+  if (node.username !== undefined && node.username !== null) {
+    if (typeof node.username !== 'string' || node.username.length > 100) {
+      errors.push("Invalid 'username': must be a string under 100 characters.");
+    }
+  }
+
+  if (node.password !== undefined && node.password !== null) {
+    if (typeof node.password !== 'string' || node.password.length > 100) {
+      errors.push("Invalid 'password': must be a string under 100 characters.");
+    }
+  }
+  
+  if (node.enabled !== undefined) {
+    if (typeof node.enabled !== 'boolean') {
+      errors.push("Invalid 'enabled': must be a boolean.");
+    }
+  }
+  
+  if (errors.length > 0) {
+    throw new Error(errors.join(" "));
+  }
+}
+
+// Helper validation function for settings data
+function validateSettingsData(settings) {
+  const errors = [];
+  
+  if (settings.mode !== undefined) {
+    const allowedModes = ['racing', 'smart', 'static'];
+    if (!allowedModes.includes(settings.mode)) {
+      errors.push(`Invalid 'mode': must be one of ${allowedModes.join(', ')}.`);
+    }
+  }
+  
+  if (settings.staticNodeId !== undefined && settings.staticNodeId !== null) {
+    if (typeof settings.staticNodeId !== 'string') {
+      errors.push("Invalid 'staticNodeId': must be a string.");
+    }
+  }
+  
+  if (settings.racingNodesCount !== undefined) {
+    const count = parseInt(settings.racingNodesCount);
+    if (isNaN(count) || count < 2 || count > 32) {
+      errors.push("Invalid 'racingNodesCount': must be a number between 2 and 32.");
+    }
+  }
+  
+  if (settings.localProxyPort !== undefined) {
+    const port = parseInt(settings.localProxyPort);
+    if (isNaN(port) || port < 1024 || port > 65535) {
+      errors.push("Invalid 'localProxyPort': must be a user port between 1024 and 65535.");
+    }
+  }
+  
+  if (settings.apiPort !== undefined) {
+    const port = parseInt(settings.apiPort);
+    if (isNaN(port) || port < 1024 || port > 65535) {
+      errors.push("Invalid 'apiPort': must be a user port between 1024 and 65535.");
+    }
+  }
+  
+  if (settings.systemProxyEnabled !== undefined) {
+    if (typeof settings.systemProxyEnabled !== 'boolean') {
+      errors.push("Invalid 'systemProxyEnabled': must be a boolean.");
+    }
+  }
+  
+  if (errors.length > 0) {
+    throw new Error(errors.join(" "));
+  }
+}
+
 function loadConfig() {
   try {
     if (fs.existsSync(CONFIG_FILE)) {
@@ -87,24 +196,36 @@ function getConfig() {
 }
 
 function updateConfig(newConfig) {
+  if (newConfig.settings) validateSettingsData(newConfig.settings);
+  if (newConfig.nodes && Array.isArray(newConfig.nodes)) {
+    newConfig.nodes.forEach(n => validateNodeData(n, true));
+  }
   currentConfig = { ...currentConfig, ...newConfig };
   saveConfig();
   return currentConfig;
 }
 
 function updateSettings(newSettings) {
+  validateSettingsData(newSettings);
   currentConfig.settings = { ...currentConfig.settings, ...newSettings };
   saveConfig();
   return currentConfig;
 }
 
 function addNode(node) {
+  validateNodeData(node);
   const newNode = {
     id: 'node_' + Math.random().toString(36).substr(2, 9),
     latency: -1,
     status: 'disconnected',
     enabled: true,
-    ...node
+    name: node.name,
+    host: node.host,
+    port: parseInt(node.port),
+    country: node.country,
+    flag: node.flag || '🌐',
+    username: node.username || null,
+    password: node.password || null
   };
   currentConfig.nodes.push(newNode);
   saveConfig();
@@ -112,9 +233,23 @@ function addNode(node) {
 }
 
 function updateNode(nodeId, updatedFields) {
+  validateNodeData(updatedFields, true);
   const nodeIndex = currentConfig.nodes.findIndex(n => n.id === nodeId);
   if (nodeIndex !== -1) {
-    currentConfig.nodes[nodeIndex] = { ...currentConfig.nodes[nodeIndex], ...updatedFields };
+    // Only map known safe schema properties to prevent arbitrary property pollution
+    const fields = {};
+    if (updatedFields.name !== undefined) fields.name = updatedFields.name;
+    if (updatedFields.host !== undefined) fields.host = updatedFields.host;
+    if (updatedFields.port !== undefined) fields.port = parseInt(updatedFields.port);
+    if (updatedFields.country !== undefined) fields.country = updatedFields.country;
+    if (updatedFields.flag !== undefined) fields.flag = updatedFields.flag;
+    if (updatedFields.username !== undefined) fields.username = updatedFields.username;
+    if (updatedFields.password !== undefined) fields.password = updatedFields.password;
+    if (updatedFields.enabled !== undefined) fields.enabled = updatedFields.enabled;
+    if (updatedFields.status !== undefined) fields.status = updatedFields.status;
+    if (updatedFields.latency !== undefined) fields.latency = updatedFields.latency;
+
+    currentConfig.nodes[nodeIndex] = { ...currentConfig.nodes[nodeIndex], ...fields };
     saveConfig();
     return currentConfig.nodes[nodeIndex];
   }

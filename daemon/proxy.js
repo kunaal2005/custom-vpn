@@ -15,28 +15,41 @@ let bytesDownloaded = 0;
 const domainRouteCache = new Map();
 const CACHE_TTL = 5 * 60 * 1000;
 
+// Periodically clean up expired cache entries (every 5 minutes)
+const cacheCleanupInterval = setInterval(() => {
+  const now = Date.now();
+  for (const [key, val] of domainRouteCache.entries()) {
+    if (val.expiry <= now) {
+      domainRouteCache.delete(key);
+    }
+  }
+}, 5 * 60 * 1000);
+
 class CancelToken {
   constructor() {
     this.cancelled = false;
-    this.sockets = [];
+    this.sockets = new Set();
   }
   register(socket) {
     if (this.cancelled) {
       socket.destroy();
     } else {
-      this.sockets.push(socket);
+      this.sockets.add(socket);
     }
+  }
+  deregister(socket) {
+    this.sockets.delete(socket);
   }
   cancelAll() {
     this.cancelled = true;
     this.sockets.forEach(s => {
       try { s.destroy(); } catch (e) {}
     });
-    this.sockets = [];
+    this.sockets.clear();
   }
 }
 
-// SOCKS5 client connection helper
+// SOCKS5 client connection helper with Username/Password Authentication support (RFC 1929)
 function connectThroughSocks5(node, host, port, atyp, addrBuffer, cancelToken, timeout = 5000) {
   return new Promise((resolve, reject) => {
     const socket = new net.Socket();
@@ -52,11 +65,25 @@ function connectThroughSocks5(node, host, port, atyp, addrBuffer, cancelToken, t
         socket.destroy();
         return;
       }
-      // Send SOCKS5 greeting [version, nmethods, methods]
-      socket.write(Buffer.from([0x05, 0x01, 0x00]));
+      
+      // Keep socket alive
+      socket.setKeepAlive(true, 60000);
+      
+      // Determine greeting based on whether node has authentication credentials
+      const hasAuth = !!(node.username && node.password);
+      const methods = hasAuth ? [0x00, 0x02] : [0x00];
+      
+      const greeting = Buffer.alloc(2 + methods.length);
+      greeting[0] = 0x05; // version
+      greeting[1] = methods.length; // nmethods
+      methods.forEach((m, idx) => {
+        greeting[2 + idx] = m;
+      });
+      
+      socket.write(greeting);
     });
 
-    let stage = 0; // 0: greeting-response, 1: connect-response
+    let stage = 0; // 0: greeting-response, 1: subnegotiation-auth-response, 2: connect-response
     
     socket.on('data', (data) => {
       if (cancelToken && cancelToken.cancelled) {
@@ -65,33 +92,80 @@ function connectThroughSocks5(node, host, port, atyp, addrBuffer, cancelToken, t
       }
       
       if (stage === 0) {
-        if (data[0] !== 0x05 || data[1] !== 0x00) {
+        const ver = data[0];
+        const method = data[1];
+        if (ver !== 0x05) {
           socket.destroy();
-          reject(new Error('SOCKS5 auth rejected by VPS'));
+          reject(new Error('Invalid SOCKS5 version from VPS'));
           return;
         }
         
-        // Send CONNECT request: [version=5, cmd=1 (CONNECT), rsv=0, atyp] + address/port buffer
-        const req = Buffer.concat([
-          Buffer.from([0x05, 0x01, 0x00, atyp]),
-          addrBuffer
-        ]);
-        
-        stage = 1;
-        socket.write(req);
+        if (method === 0x02) {
+          // Username/Password authentication requested
+          if (!node.username || !node.password) {
+            socket.destroy();
+            reject(new Error('VPS requested Username/Password auth, but no credentials provided'));
+            return;
+          }
+          
+          const uBuf = Buffer.from(node.username, 'utf8');
+          const pBuf = Buffer.from(node.password, 'utf8');
+          
+          const authReq = Buffer.alloc(3 + uBuf.length + pBuf.length);
+          authReq[0] = 0x01; // auth version
+          authReq[1] = uBuf.length; // username length
+          uBuf.copy(authReq, 2);
+          authReq[2 + uBuf.length] = pBuf.length; // password length
+          pBuf.copy(authReq, 3 + uBuf.length);
+          
+          stage = 1;
+          socket.write(authReq);
+        } else if (method === 0x00) {
+          // No auth accepted
+          sendConnectRequest();
+        } else {
+          socket.destroy();
+          reject(new Error(`Unsupported SOCKS5 auth method from VPS: ${method}`));
+        }
       } else if (stage === 1) {
+        const ver = data[0];
+        const status = data[1];
+        if (ver !== 0x01 || status !== 0x00) {
+          socket.destroy();
+          reject(new Error('SOCKS5 Username/Password authentication failed'));
+          return;
+        }
+        
+        sendConnectRequest();
+      } else if (stage === 2) {
         if (data[0] !== 0x05 || data[1] !== 0x00) {
           socket.destroy();
-          reject(new Error(`VPS connection failed with code: ${data[1]}`));
+          reject(new Error(`VPS connection failed with SOCKS status: ${data[1]}`));
           return;
         }
         
         socket.removeAllListeners('data');
         socket.removeAllListeners('error');
         socket.removeAllListeners('timeout');
+        
+        if (cancelToken) {
+          cancelToken.deregister(socket); // CRITICAL: Deregister winning socket so it is not killed when cancelAll is called!
+        }
+        
         resolve(socket);
       }
     });
+
+    function sendConnectRequest() {
+      // Send CONNECT request: [version=5, cmd=1 (CONNECT), rsv=0, atyp] + address/port buffer
+      const req = Buffer.concat([
+        Buffer.from([0x05, 0x01, 0x00, atyp]),
+        addrBuffer
+      ]);
+      
+      stage = 2;
+      socket.write(req);
+    }
 
     socket.once('error', (err) => {
       socket.destroy();
@@ -151,6 +225,9 @@ function getEligibleNodes(config, settings) {
 
 // Handle client requests
 function handleClient(clientSocket) {
+  // Set keepalive on the local client socket
+  clientSocket.setKeepAlive(true, 60000);
+  
   clientSocket.once('data', (data) => {
     // SOCKS5 Greeting
     if (data[0] !== 0x05) {
@@ -158,7 +235,7 @@ function handleClient(clientSocket) {
       return;
     }
     
-    // Accept NO AUTH (0x00)
+    // Accept NO AUTH (0x00) for local connections (since only local client tools bind to this)
     clientSocket.write(Buffer.from([0x05, 0x00]));
     
     clientSocket.once('readable', async () => {
@@ -281,11 +358,11 @@ function handleClient(clientSocket) {
             const winner = await Promise.any(promises);
             const duration = Date.now() - raceStartTime;
             
-            // Cancel other ongoing handshakes immediately!
-            cancelToken.cancelAll();
-            
             const winningNode = winner.node;
             const winningSocket = winner.socket;
+            
+            // Cancel other ongoing handshakes immediately!
+            cancelToken.cancelAll();
             
             // Calculate saving: (max latency among other racing nodes or average latency) - winner latency
             let maxLatency = 0;
@@ -401,6 +478,7 @@ function start(port = 1080) {
 
 function stop() {
   return new Promise((resolve) => {
+    clearInterval(cacheCleanupInterval);
     if (server) {
       server.close(() => {
         console.log("SOCKS5 Proxy Server stopped");
@@ -421,6 +499,8 @@ function stop() {
 function onLog(callback) {
   logCallback = callback;
 }
+
+// ... rest of file (getConnectionLogs, getSpeedStats, exports) remains identical
 
 function getConnectionLogs() {
   return connectionLogs;

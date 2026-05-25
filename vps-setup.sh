@@ -76,28 +76,80 @@ AllowedIPs = $CLIENT_IP/32
 EOF
 
 # Install Python SOCKS5 Proxy Script
-echo -e "\n${BLUE}Step 4: Creating local SOCKS5 proxy server...${NC}"
+echo -e "\n${BLUE}Step 4: Creating local SOCKS5 proxy server with authentication...${NC}"
+
+# Generate random credentials
+SOCKS_USER="vpn_user_$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 8)"
+SOCKS_PASS="$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 16)"
+
 cat > /usr/local/bin/vps_socks5.py <<'EOF'
 import socket
 import select
 import threading
 import sys
 
-def handle_client(client_socket):
+def handle_client(client_socket, username, password):
     try:
         # SOCKS5 Handshake
-        version, nmethods = client_socket.recv(2)
+        header = client_socket.recv(2)
+        if len(header) < 2:
+            client_socket.close()
+            return
+        version, nmethods = header[0], header[1]
         if version != 5:
             client_socket.close()
             return
         methods = client_socket.recv(nmethods)
-        # We accept NO AUTHENTICATION (0x00)
-        client_socket.sendall(bytes([5, 0]))
+        
+        if username and password:
+            if 2 not in methods:
+                # Username/Password auth (0x02) required
+                client_socket.sendall(bytes([5, 0xFF]))
+                client_socket.close()
+                return
+            client_socket.sendall(bytes([5, 2]))
+            
+            # Subnegotiation auth
+            auth_header = client_socket.recv(2)
+            if len(auth_header) < 2:
+                client_socket.close()
+                return
+            auth_version, ulen = auth_header[0], auth_header[1]
+            if auth_version != 1:
+                # Auth version must be 1
+                client_socket.sendall(bytes([1, 1]))
+                client_socket.close()
+                return
+            
+            uname = client_socket.recv(ulen).decode('utf-8', errors='ignore')
+            plen_buf = client_socket.recv(1)
+            if not plen_buf:
+                client_socket.close()
+                return
+            plen = plen_buf[0]
+            passwd = client_socket.recv(plen).decode('utf-8', errors='ignore')
+            
+            if uname == username and passwd == password:
+                client_socket.sendall(bytes([1, 0])) # Success
+            else:
+                client_socket.sendall(bytes([1, 1])) # Failure
+                client_socket.close()
+                return
+        else:
+            # No auth allowed if username/password not configured
+            if 0 not in methods:
+                client_socket.sendall(bytes([5, 0xFF]))
+                client_socket.close()
+                return
+            client_socket.sendall(bytes([5, 0]))
 
-        # Request
-        version, cmd, _, atyp = client_socket.recv(4)
+        # SOCKS5 Request
+        req_header = client_socket.recv(4)
+        if len(req_header) < 4:
+            client_socket.close()
+            return
+        version, cmd, _, atyp = req_header[0], req_header[1], req_header[2], req_header[3]
         if version != 5 or cmd != 1: # Only CONNECT supported (0x01)
-            # Send connection not allowed
             client_socket.sendall(bytes([5, 7, 0, 1, 0, 0, 0, 0, 0, 0]))
             client_socket.close()
             return
@@ -105,10 +157,13 @@ def handle_client(client_socket):
         if atyp == 1: # IPv4
             dest_ip = socket.inet_ntoa(client_socket.recv(4))
         elif atyp == 3: # Domain name
-            domain_len = client_socket.recv(1)[0]
+            len_buf = client_socket.recv(1)
+            if not len_buf:
+                client_socket.close()
+                return
+            domain_len = len_buf[0]
             dest_ip = client_socket.recv(domain_len).decode('utf-8')
         elif atyp == 4: # IPv6
-            # We can support IPv6 or just return error
             client_socket.sendall(bytes([5, 8, 0, 1, 0, 0, 0, 0, 0, 0]))
             client_socket.close()
             return
@@ -116,21 +171,22 @@ def handle_client(client_socket):
             client_socket.close()
             return
 
-        dest_port = int.from_bytes(client_socket.recv(2), 'big')
+        port_buf = client_socket.recv(2)
+        if len(port_buf) < 2:
+            client_socket.close()
+            return
+        dest_port = int.from_bytes(port_buf, 'big')
 
         # Connect to destination
         dest_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         dest_socket.settimeout(10)
         try:
             dest_socket.connect((dest_ip, dest_port))
-            # Get bound address details
             bind_ip, bind_port = dest_socket.getsockname()
             bind_ip_bytes = socket.inet_aton(bind_ip)
             bind_port_bytes = bind_port.to_bytes(2, 'big')
-            # Success reply
             client_socket.sendall(bytes([5, 0, 0, 1]) + bind_ip_bytes + bind_port_bytes)
-        except Exception as e:
-            # Connection refused/general failure
+        except Exception:
             client_socket.sendall(bytes([5, 5, 0, 1, 0, 0, 0, 0, 0, 0]))
             client_socket.close()
             return
@@ -145,7 +201,7 @@ def handle_client(client_socket):
                     data = src.recv(8192)
                     if not data:
                         break
-                    dst.sendall(data)
+                      dst.sendall(data)
             except Exception:
                 pass
             finally:
@@ -165,19 +221,27 @@ def handle_client(client_socket):
 
 def main():
     if len(sys.argv) < 3:
-        print("Usage: python vps_socks5.py <bind_ip> <bind_port>")
+        print("Usage: python vps_socks5.py <bind_ip> <bind_port> [<username> <password>]")
         sys.exit(1)
     bind_ip = sys.argv[1]
     bind_port = int(sys.argv[2])
+    
+    username = sys.argv[3] if len(sys.argv) >= 5 else None
+    password = sys.argv[4] if len(sys.argv) >= 5 else None
+    
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind((bind_ip, bind_port))
     server.listen(256)
-    print(f"SOCKS5 proxy listening on {bind_ip}:{bind_port}")
+    if username and password:
+        print(f"SOCKS5 proxy listening on {bind_ip}:{bind_port} with authentication enabled")
+    else:
+        print(f"SOCKS5 proxy listening on {bind_ip}:{bind_port} (no authentication)")
+        
     while True:
         try:
             client, addr = server.accept()
-            t = threading.Thread(target=handle_client, args=(client,))
+            t = threading.Thread(target=handle_client, args=(client, username, password))
             t.daemon = True
             t.start()
         except KeyboardInterrupt:
@@ -202,7 +266,7 @@ Requires=wg-quick@wg0.service
 [Service]
 Type=simple
 # Bind to WireGuard internal IP so it is only accessible via the tunnel
-ExecStart=/usr/bin/python3 /usr/local/bin/vps_socks5.py $SUBNET_IP $SOCKS_PORT
+ExecStart=/usr/bin/python3 /usr/local/bin/vps_socks5.py $SUBNET_IP $SOCKS_PORT $SOCKS_USER $SOCKS_PASS
 Restart=always
 RestartSec=5
 
@@ -219,8 +283,8 @@ systemctl enable vpn-socks5
 systemctl start vpn-socks5
 
 echo -e "\n${GREEN}=== VPS Node Setup Complete ===${NC}"
-echo -e "WireGuard Status: $(systemctl is-active wg-quick@wg0)"
-echo -e "SOCKS5 Proxy Status: $(systemctl is-active vpn-socks5)"
+echo -e "WireGuard Status: \$(systemctl is-active wg-quick@wg0)"
+echo -e "SOCKS5 Proxy Status: \$(systemctl is-active vpn-socks5)"
 echo -e "\n--------------------------------------------------"
 echo -e "Save the config below as ${GREEN}vpn-node${NODE_ID}.conf${NC} on your laptop."
 echo -e "You can import this config directly into the official WireGuard app."
@@ -239,3 +303,9 @@ AllowedIPs = $SUBNET_IP/32, 10.0.${NODE_ID}.0/24
 PersistentKeepalive = 25
 EOF
 echo -e "${NC}--------------------------------------------------"
+echo -e "SOCKS5 Proxy Credentials for Dashboard:"
+echo -e "Username: ${GREEN}$SOCKS_USER${NC}"
+echo -e "Password: ${GREEN}$SOCKS_PASS${NC}"
+echo -e "Port: ${GREEN}$SOCKS_PORT${NC}"
+echo -e "--------------------------------------------------"
+

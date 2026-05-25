@@ -12,7 +12,7 @@ export default function App() {
   const [speedHistory, setSpeedHistory] = useState([]); // for SVG charts
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingNode, setEditingNode] = useState(null);
-  const [formData, setFormData] = useState({ name: '', host: '', port: 1080, country: '', flag: '🌐' });
+  const [formData, setFormData] = useState({ name: '', host: '', port: 1080, country: '', flag: '🌐', username: '', password: '' });
   const [totalSavedMs, setTotalSavedMs] = useState(0);
   const [totalOptimizations, setTotalOptimizations] = useState(0);
   const [statusText, setStatusText] = useState('Disconnected');
@@ -231,7 +231,7 @@ export default function App() {
       }
       setShowAddModal(false);
       setEditingNode(null);
-      setFormData({ name: '', host: '', port: 1080, country: '', flag: '🌐' });
+      setFormData({ name: '', host: '', port: 1080, country: '', flag: '🌐', username: '', password: '' });
     } catch (e) {
       console.error("Failed to save node:", e);
     }
@@ -245,7 +245,9 @@ export default function App() {
       host: node.host,
       port: node.port,
       country: node.country,
-      flag: node.flag || '🌐'
+      flag: node.flag || '🌐',
+      username: node.username || '',
+      password: node.password || ''
     });
     setShowAddModal(true);
   };
@@ -492,7 +494,14 @@ export default function App() {
                         <h4>{node.name}</h4>
                         <span className="node-country-tag">{node.country}</span>
                       </div>
-                      <p className="node-details-text">{node.host}:{node.port}</p>
+                      <p className="node-details-text">
+                        {node.host}:{node.port}
+                        {node.username && (
+                          <span className="node-auth-icon" title={`Authentication enabled (User: ${node.username})`}>
+                            🔑 {node.username}
+                          </span>
+                        )}
+                      </p>
                     </div>
                   </div>
 
@@ -648,8 +657,29 @@ export default function App() {
                 </div>
               </div>
 
+              <div className="form-row">
+                <div className="form-group flex-1">
+                  <label>SOCKS5 Username (Optional)</label>
+                  <input 
+                    type="text" 
+                    placeholder="e.g. vpnuser" 
+                    value={formData.username || ''} 
+                    onChange={e => setFormData({ ...formData, username: e.target.value })}
+                  />
+                </div>
+                <div className="form-group flex-1">
+                  <label>SOCKS5 Password (Optional)</label>
+                  <input 
+                    type="password" 
+                    placeholder="e.g. securepass" 
+                    value={formData.password || ''} 
+                    onChange={e => setFormData({ ...formData, password: e.target.value })}
+                  />
+                </div>
+              </div>
+
               <div className="modal-actions">
-                <button type="button" className="btn btn-secondary" onClick={() => setShowAddModal(false)}>
+                <button type="button" className="btn btn-secondary" onClick={() => { setShowAddModal(false); setEditingNode(null); setFormData({ name: '', host: '', port: 1080, country: '', flag: '🌐', username: '', password: '' }); }}>
                   Cancel
                 </button>
                 <button type="submit" className="btn btn-primary">
