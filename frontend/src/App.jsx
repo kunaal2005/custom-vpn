@@ -264,7 +264,7 @@ export default function App() {
     return (
       <div className="loading-screen">
         <div className="spinner"></div>
-        <p>Connecting to Antigravity VPN Gateway...</p>
+        <p>Connecting to VPN Gateway...</p>
       </div>
     );
   }
@@ -302,7 +302,7 @@ export default function App() {
         <div className="header-brand">
           <div className="logo-icon">▲</div>
           <div>
-            <h1>ANTIGRAVITY VPN</h1>
+            <h1>CUSTOM VPN</h1>
             <p className="subtitle">Multi-Node Intelligent Routing Gateway</p>
           </div>
         </div>

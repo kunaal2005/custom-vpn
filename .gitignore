@@ -2,3 +2,8 @@ node_modules/
 dist/
 .env
 .DS_Store
+
+# Custom VPN configurations & sensitive keys
+ipm files for all nodes/
+vpn-node*.conf
+daemon/config.json

@@ -336,16 +336,16 @@ function handleClient(clientSocket) {
           selectedNode = raceNodes[0] || eligibleNodes[0];
           useRacing = false;
         } else {
-          const cancelToken = new CancelToken();
           const raceStartTime = Date.now();
           const nodeTimes = new Map(); // record individual socket connect times for dashboard optimization calculations
           
           const promises = raceNodes.map(node => {
             const nodeStart = Date.now();
-            return connectThroughSocks5(node, host, port, atyp, addrBuffer, cancelToken, 4000)
+            return connectThroughSocks5(node, host, port, atyp, addrBuffer, null, 4000)
               .then(socket => {
-                nodeTimes.set(node.id, Date.now() - nodeStart);
-                return { node, socket };
+                const duration = Date.now() - nodeStart;
+                nodeTimes.set(node.id, duration);
+                return { node, socket, duration };
               })
               .catch(err => {
                 nodeTimes.set(node.id, 9999);
@@ -356,32 +356,11 @@ function handleClient(clientSocket) {
           try {
             // Wait for the first successful connection
             const winner = await Promise.any(promises);
-            const duration = Date.now() - raceStartTime;
-            
             const winningNode = winner.node;
             const winningSocket = winner.socket;
+            const winningDuration = winner.duration;
             
-            // Cancel other ongoing handshakes immediately!
-            cancelToken.cancelAll();
-            
-            // Calculate saving: (max latency among other racing nodes or average latency) - winner latency
-            let maxLatency = 0;
-            nodeTimes.forEach((time, id) => {
-              if (id !== winningNode.id && time < 9999 && time > maxLatency) {
-                maxLatency = time;
-              }
-            });
-            const savedMs = maxLatency > 0 ? Math.max(0, maxLatency - duration) : 0;
-            
-            logId = logConnection(host, port, winningNode, 'racing', duration, savedMs);
-            
-            // Cache the winning node for this domain
-            domainRouteCache.set(host, {
-              nodeId: winningNode.id,
-              expiry: Date.now() + CACHE_TTL
-            });
-            
-            // Write success response to client
+            // Write success response to client immediately so there is no delay
             clientSocket.write(Buffer.from([0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]));
             
             // Speed tracking
@@ -407,9 +386,47 @@ function handleClient(clientSocket) {
             clientSocket.on('error', cleanup);
             winningSocket.on('error', cleanup);
             
+            // Estimate latency savings for logs
+            let maxLatency = 0;
+            nodeTimes.forEach((time, id) => {
+              if (id !== winningNode.id && time < 9999 && time > maxLatency) {
+                maxLatency = time;
+              }
+            });
+            const savedMs = maxLatency > 0 ? Math.max(0, maxLatency - winningDuration) : 0;
+            logId = logConnection(host, port, winningNode, 'racing', winningDuration, savedMs);
+            
+            // Wait for all attempts to settle in the background to find the optimal long-term route
+            Promise.allSettled(promises).then((results) => {
+              let optimalNode = winningNode;
+              let bestEstRtt = winningDuration - 3 * (winningNode.latency || 0);
+              
+              results.forEach((res) => {
+                if (res.status === 'fulfilled') {
+                  const { node, socket, duration } = res.value;
+                  
+                  // Destroy non-winning sockets immediately
+                  if (node.id !== winningNode.id) {
+                    try { socket.destroy(); } catch (e) {}
+                  }
+                  
+                  // estRtt = total_handshake_duration - 3 * client_to_vps_latency
+                  const estRtt = duration - 3 * (node.latency || 0);
+                  if (estRtt < bestEstRtt) {
+                    bestEstRtt = estRtt;
+                    optimalNode = node;
+                  }
+                }
+              });
+              
+              // Cache the optimal node for this domain
+              domainRouteCache.set(host, {
+                nodeId: optimalNode.id,
+                expiry: Date.now() + CACHE_TTL
+              });
+            });
+            
           } catch (err) {
-            // All racing attempts failed
-            cancelToken.cancelAll();
             logConnection(host, port, null, 'racing_failed', Date.now() - startTime);
             clientSocket.write(Buffer.from([0x05, 0x05, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]));
             clientSocket.destroy();

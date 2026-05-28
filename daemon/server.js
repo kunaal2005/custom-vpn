@@ -26,6 +26,7 @@ app.use(cors({
 app.use(express.json());
 
 const config = configManager.loadConfig();
+const PORT = config.settings.apiPort || 3001;
 let activeClients = new Set();
 
 // SOCKS5 Proxy Management
@@ -82,17 +83,18 @@ async function setWindowsProxy(enabled, port = 1080) {
         'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings',
         '/v', 'ProxyEnable',
         '/t', 'REG_DWORD',
-        '/d', '1',
+        '/d', '0',
         '/f'
       ]);
       await runReg([
         'add',
         'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings',
-        '/v', 'ProxyServer',
+        '/v', 'AutoConfigURL',
         '/t', 'REG_SZ',
-        '/d', `127.0.0.1:${cleanPort}`,
+        '/d', `http://127.0.0.1:${PORT}/proxy.pac`,
         '/f'
       ]);
+      console.log(`Windows system proxy enabled using PAC file: http://127.0.0.1:${PORT}/proxy.pac`);
     } else {
       await runReg([
         'add',
@@ -102,14 +104,100 @@ async function setWindowsProxy(enabled, port = 1080) {
         '/d', '0',
         '/f'
       ]);
+      try {
+        await runReg([
+          'delete',
+          'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings',
+          '/v', 'AutoConfigURL',
+          '/f'
+        ]);
+      } catch (err) {
+        // Ignore if AutoConfigURL didn't exist
+      }
+      console.log("Windows system proxy disabled (PAC auto-config removed).");
     }
-    console.log(`Windows system proxy registry updated. Enabled: ${enabled}, Server: 127.0.0.1:${cleanPort}`);
     return true;
   } catch (err) {
     console.error("Failed to update Windows proxy registry via execFile:", err);
     return false;
   }
 }
+
+// Remote SSH Service Control helper using execFile
+function controlRemoteService(node, action) {
+  return new Promise((resolve) => {
+    if (!node.sshUser || !node.sshKeyPath || !node.ip) {
+      console.log(`Skipping remote service control for node ${node.id} (${node.name || 'unnamed'}): Missing SSH details.`);
+      return resolve({ success: true, node });
+    }
+
+    const sshArgs = [
+      '-i', node.sshKeyPath,
+      '-o', 'StrictHostKeyChecking=no',
+      '-o', 'BatchMode=yes',
+      '-o', 'ConnectTimeout=5',
+      `${node.sshUser}@${node.ip}`,
+      `sudo systemctl ${action} vpn-socks5`
+    ];
+
+    console.log(`Executing remote SSH action (${action}) on node ${node.id} (${node.ip})...`);
+    execFile('ssh', sshArgs, { timeout: 10000 }, (err, stdout, stderr) => {
+      if (err) {
+        console.error(`Remote service control failed for node ${node.id}:`, err.message || err);
+        return resolve({ success: false, node, error: err });
+      }
+      console.log(`Successfully completed remote service (${action}) on node ${node.id}.`);
+      resolve({ success: true, node });
+    });
+  });
+}
+
+// Control all remote services for active nodes
+async function controlAllActiveRemoteServices(action) {
+  const currentConfig = configManager.getConfig();
+  const activeNodes = currentConfig.nodes.filter(n => n.enabled);
+  
+  console.log(`Triggering remote service action (${action}) on ${activeNodes.length} active nodes...`);
+  
+  const promises = activeNodes.map(node => controlRemoteService(node, action));
+  const results = await Promise.all(promises);
+  return results;
+}
+
+// Proxy Auto-Configuration (PAC) endpoint to force SOCKS5 in Windows
+app.get('/proxy.pac', (req, res) => {
+  res.setHeader('Content-Type', 'application/x-ns-proxy-autoconfig');
+  res.send(`
+    function FindProxyForURL(url, host) {
+      if (host === "localhost" || 
+          host === "127.0.0.1" || 
+          host === "[::1]" || 
+          host === "::1" || 
+          shExpMatch(host, "10.*") || 
+          shExpMatch(host, "172.16.*") || 
+          shExpMatch(host, "172.17.*") || 
+          shExpMatch(host, "172.18.*") || 
+          shExpMatch(host, "172.19.*") || 
+          shExpMatch(host, "172.20.*") || 
+          shExpMatch(host, "172.21.*") || 
+          shExpMatch(host, "172.22.*") || 
+          shExpMatch(host, "172.23.*") || 
+          shExpMatch(host, "172.24.*") || 
+          shExpMatch(host, "172.25.*") || 
+          shExpMatch(host, "172.26.*") || 
+          shExpMatch(host, "172.27.*") || 
+          shExpMatch(host, "172.28.*") || 
+          shExpMatch(host, "172.29.*") || 
+          shExpMatch(host, "172.30.*") || 
+          shExpMatch(host, "172.31.*") || 
+          shExpMatch(host, "192.168.*") || 
+          isPlainHostName(host)) {
+        return "DIRECT";
+      }
+      return "SOCKS5 127.0.0.1:${proxyPort}; DIRECT";
+    }
+  `);
+});
 
 // REST API Endpoints
 app.get('/api/config', (req, res) => {
@@ -138,9 +226,16 @@ app.post('/api/settings', async (req, res) => {
       }
     }
 
-    // Update Windows System Proxy if setting toggled or port changed
+    // Update Windows System Proxy and remote nodes if setting toggled or port changed
     if (oldSystemProxy !== newSystemProxy || (newSystemProxy && oldPort !== newPort)) {
-      await setWindowsProxy(newSystemProxy, newPort);
+      if (newSystemProxy) {
+        // Toggled ON: Start remote services first, then set Windows proxy
+        await controlAllActiveRemoteServices('start');
+        await setWindowsProxy(newSystemProxy, newPort);
+      } else {
+        // Toggled OFF: Disable Windows proxy first, but keep remote SOCKS5 services running for local proxy
+        await setWindowsProxy(newSystemProxy, newPort);
+      }
     }
     
     broadcast({
@@ -297,6 +392,9 @@ async function shutdown() {
     await setWindowsProxy(false);
   }
   
+  // Stop all active remote SOCKS5 proxies
+  await controlAllActiveRemoteServices('stop');
+  
   await proxy.stop();
   server.close(() => {
     console.log("Express API Server stopped");
@@ -304,7 +402,6 @@ async function shutdown() {
   });
 }
 
-const PORT = config.settings.apiPort || 3001;
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     console.error(`\n[CRITICAL ERROR] Port ${PORT} is already in use by another process.`);
@@ -317,4 +414,8 @@ server.on('error', (err) => {
 
 server.listen(PORT, () => {
   console.log(`Control Panel API Server running on port ${PORT}`);
+  // Start remote services for all active nodes on boot
+  controlAllActiveRemoteServices('start')
+    .then(() => console.log("All remote SOCKS5 services started on boot."))
+    .catch(err => console.error("Failed to start remote SOCKS5 services on boot:", err));
 });

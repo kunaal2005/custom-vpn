@@ -1,0 +1,44 @@
+{
+  "nodes": [
+    {
+      "id": "node_example_1",
+      "latency": -1,
+      "status": "offline",
+      "enabled": true,
+      "name": "Node 1 (Example Region)",
+      "host": "10.0.1.1",
+      "port": 1080,
+      "country": "India",
+      "flag": "🇮🇳",
+      "username": "vpn_user_example_1",
+      "password": "example_password_1",
+      "sshUser": "azureuser",
+      "sshKeyPath": "d:\\PROGRAMING\\vpn\\ipm files for all nodes\\vpn-node-1_key.pem",
+      "ip": "20.x.x.x"
+    },
+    {
+      "id": "node_example_2",
+      "latency": -1,
+      "status": "offline",
+      "enabled": true,
+      "name": "Node 2 (Example Region)",
+      "host": "10.0.2.1",
+      "port": 1080,
+      "country": "Japan",
+      "flag": "🇯🇵",
+      "username": "vpn_user_example_2",
+      "password": "example_password_2",
+      "sshUser": "azureuser",
+      "sshKeyPath": "d:\\PROGRAMING\\vpn\\ipm files for all nodes\\virtual-node2_key.pem",
+      "ip": "20.y.y.y"
+    }
+  ],
+  "settings": {
+    "mode": "racing",
+    "staticNodeId": "node_example_1",
+    "racingNodesCount": 3,
+    "localProxyPort": 1080,
+    "apiPort": 3001,
+    "systemProxyEnabled": false
+  }
+}

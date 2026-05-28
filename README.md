@@ -1,17 +1,34 @@
-# ▲ Custom Multi-Node VPN Client
+# ▲ Custom Multi-Node VPN Client (v1.0)
 
-An intelligent, multi-hop SOCKS5 routing gateway over WireGuard with **TCP Handshake Racing** (Happy Eyeballs across multiple geographic nodes) and a premium glassmorphic dashboard.
+An intelligent, multi-hop SOCKS5 routing gateway over WireGuard featuring **TCP Handshake Racing with SOCKS5 RTT Compensation** (Happy Eyeballs across multiple geographic nodes) and a premium glassmorphic dashboard.
 
 ---
 
-## 🌟 Features
+## 🌟 Key Architecture & How It Works
 
-- **Concurrent WireGuard Tunnels**: Maintain active connections to multiple VPS nodes simultaneously without routing conflicts by isolating node subnets.
-- **TCP Handshake Racing**: Initiates parallel connections to target domains through all online nodes concurrently. Whichever node completes the 3-way handshake first wins the connection. This guarantees the lowest possible latency and bypasses geoblocking instantly.
-- **Latency Monitor**: Periodically measures round-trip time (RTT) to all nodes via lightweight TCP pings.
-- **Route-Caching**: Caches domain-to-node routing associations for 5 minutes, preventing session instability and login warnings on websites.
-- **Windows System Proxy Integration**: Toggle system-wide routing directly from the control panel.
-- **Live Bandwidth & Connection Logs**: View live speedometers, scrolling sparkline graphs, and logs of active and closed connections detailing which node was selected and the latency savings.
+### 1. SOCKS5 Routing Over WireGuard
+Your applications and browser connect to `127.0.0.1:1080` (the local proxy daemon). When you request a connection, the local proxy contacts the VPS's internal IP (e.g., `10.0.3.1:1080`). Since `10.0.3.1` matches the subnet route of WireGuard Interface 3, your operating system automatically routes the connection through that specific encrypted tunnel. The VPS proxy then carries out the request on the public internet.
+
+### 2. TCP Handshake Racing with SOCKS5 RTT Compensation
+To bypass geoblocks and route traffic through the fastest node, the proxy initiates parallel connections to target domains through all online VPS nodes in parallel (up to your configured limit).
+
+#### The SOCKS5 Handshake Penalty
+In standard SOCKS5, the handshake process requires 4 round-trips (RTT) between the client and the VPS:
+1. TCP Connect (1 RTT)
+2. SOCKS5 Greeting & Negotiation (1 RTT)
+3. Username/Password Authentication (1 RTT)
+4. SOCKS5 CONNECT Request & Remote connection to target (1 RTT + VPS-to-Target connection time)
+
+Because of this 4x overhead, a node with low local latency (e.g., India at 65ms) would *always* win the race against a node with higher local latency (e.g., France at 192ms), even if the France node connects to the target website (e.g., European servers) much faster!
+
+#### Our Dynamic Route Optimization Solution
+To make routing truly dynamic and optimal, our proxy engine implements **SOCKS5 RTT Compensation**:
+1. **Immediate Response**: The very first socket to successfully complete the SOCKS5 handshake is immediately resolved and piped to the client application so there is no loading delay.
+2. **Background Settle**: The remaining racing connections are allowed to complete in the background (within a 4-second timeout).
+3. **RTT Calculation**: Once all connections settle, the daemon calculates the **Estimated Data RTT** for each node:
+   $$\text{Estimated Data RTT} = \text{Total Handshake Duration} - 3 \times \text{Client-to-VPS Latency}$$
+4. **Optimal Route Caching**: The node with the lowest Estimated RTT is cached for that domain. All subsequent connections to that domain (which happen instantly as a web page loads scripts, styles, images) are routed directly through that optimal node.
+5. **Leak Prevention**: Sockets of non-winning connections are immediately destroyed to prevent socket and memory leaks.
 
 ---
 
@@ -20,7 +37,8 @@ An intelligent, multi-hop SOCKS5 routing gateway over WireGuard with **TCP Hands
 ```
 d:\PROGRAMING\vpn\
 ├── daemon/                     # Node.js backend daemon
-│   ├── config.json             # Active node list & application settings
+│   ├── config.json             # Active node list & application settings (gitignored)
+│   ├── config.example.json     # Configuration template (safe to share)
 │   ├── config-manager.js       # JSON settings manager
 │   ├── monitor.js              # Node latency checker
 │   ├── proxy.js                # Custom SOCKS5 server & Racing engine
@@ -33,31 +51,38 @@ d:\PROGRAMING\vpn\
 │   │   └── main.jsx
 │   └── index.html
 ├── vps-setup.sh                # Remote server setup script (Debian/Ubuntu)
-└── start.bat                   # Desktop launch script
+├── start.bat                   # Silent startup script (spawns hidden terminals)
+└── stop.bat                    # Process termination cleanup script
 ```
 
 ---
 
 ## 🚀 Setup Instructions
 
-### Phase 1: Configure Your VPS Nodes
+### Phase 1: Deploy Your VPS Nodes
 You can set up as many nodes as you want. For each VPS, perform the following steps:
 
-1. Connect to your VPS via SSH as `root`.
-2. Upload or paste the contents of [vps-setup.sh](file:///d:/PROGRAMING/vpn/vps-setup.sh) to the VPS.
+1. Connect to your VPS via SSH as `root` (or as a user with `sudo` privileges).
+2. Upload the contents of [vps-setup.sh](vps-setup.sh) to the VPS.
 3. Run the script:
    ```bash
    sudo bash vps-setup.sh
    ```
 4. Follow the interactive prompts:
-   - **Node ID**: Input a unique number for each node (e.g. `1` for Node 1, `2` for Node 2, `3` for Node 3). This allocates a distinct subnet (e.g., `10.0.1.0/24`, `10.0.2.0/24`) so tunnels do not conflict.
-   - **Ports**: Press `Enter` to accept the default ports (WireGuard: `51821+ID`, SOCKS5: `1080`).
-5. **CRITICAL**: The script will complete and print a block of client WireGuard configuration text. Save this block on your laptop as `vpn-nodeX.conf` (where `X` is the Node ID).
+   - **Node ID**: Input a unique number for each node (e.g. `1` for India, `2` for Japan, `3` for France). This allocates a distinct subnet (e.g., `10.0.1.0/24`, `10.0.2.0/24`, `10.0.3.0/24`) to prevent routing conflicts.
+   - **Ports**: Press `Enter` to accept the default ports (WireGuard: `51820+ID`, SOCKS5: `1080`).
+5. The setup script will install WireGuard and configure a python SOCKS5 authentication proxy, generating credentials automatically.
+6. **CRITICAL**: The script will complete and print a block of client WireGuard configuration text. Save this block on your laptop as `vpn-nodeX.conf` (where `X` is the Node ID).
+
+#### Cloud Security Rules (Azure/AWS)
+For each node, ensure the following inbound ports are allowed in your network security group:
+- **`22` (TCP)**: SSH Management Access.
+- **`51820 + ID` (UDP)**: WireGuard Handshake port (e.g., `51821` for Node 1, `51823` for Node 3).
 
 ---
 
 ### Phase 2: Install WireGuard on Your Laptop
-1. Download and install the official client from [Wireguard for Windows](https://www.wireguard.com/install/).
+1. Download and install the official client from [Wireguard](https://www.wireguard.com/install/).
 2. Open the WireGuard application.
 3. Click **Add Tunnel** and select the `vpn-nodeX.conf` files you generated in Phase 1.
 4. **Important**: Because each config has `AllowedIPs = 10.0.X.1/32, 10.0.X.0/24`, they only route VPN internal subnet traffic through the tunnel. General internet traffic is unaffected.
@@ -65,34 +90,32 @@ You can set up as many nodes as you want. For each VPS, perform the following st
 
 ---
 
-### Phase 3: Launch the Dashboard & Gateway
-1. Navigate to the project folder `d:\PROGRAMING\vpn\`.
-2. Double-click [start.bat](file:///d:/PROGRAMING/vpn/start.bat).
+### Phase 3: Configure SOCKS5 Daemon Settings
+1. Navigate to the `daemon/` directory.
+2. Copy `config.example.json` to `config.json`.
+3. Edit `config.json` and insert the remote credentials and IP addresses generated during Phase 1:
+   - `host`: The internal IP of the node (e.g., `10.0.3.1`).
+   - `port`: The SOCKS5 port (default `1080`).
+   - `username` / `password`: SOCKS5 credentials printed by the setup script.
+   - `ip`: The public IP of the VPS (e.g., `20.19.83.100`).
+   - `sshKeyPath`: Local path to your private key file `.pem` (used for service restarts).
+
+---
+
+### Phase 4: Launch the Dashboard & Gateway
+1. Navigate to the root folder `d:\PROGRAMING\vpn\`.
+2. Double-click [start.bat](start.bat).
 3. The launcher will:
-   - Install any missing node dependencies.
-   - Boot up the local routing daemon.
-   - Launch the Vite development server.
-   - Open your default browser to `http://localhost:5173`.
-4. In the Control Panel, you will see your active nodes, latency values, and a live connection log.
+   - Launch the local SOCKS5 routing daemon silently in background mode.
+   - Launch the Vite development server silently in background mode.
+   - Open your default browser to the Control Panel at `http://localhost:5173`.
+4. To shut down the SOCKS5 proxy and frontend servers, simply **press any key** in the main terminal window.
+5. If you close the terminal window by clicking the `X` button, double-click **[stop.bat](stop.bat)** to cleanly terminate the background processes.
 
 ---
 
-## ⚙️ How it Works
+## 💻 Tray Network Icon Behavior (FAQ)
 
-### 1. SOCKS5 Routing Over WireGuard
-Your browser/applications connect to `127.0.0.1:1080` (the local proxy). When you request a connection, the local proxy contacts the VPS's internal IP (e.g. `10.0.2.1:1080`). Since `10.0.2.1` matches the subnet route of WireGuard Interface 2, the Windows OS automatically routes the connection through that specific encrypted tunnel. The VPS proxy then carries out the request on the public internet.
-
-### 2. TCP Handshake Racing
-When **Racing Mode** is active and you visit a website (e.g., `github.com`):
-1. The local proxy initiates a SOCKS5 connect request to `github.com` through *multiple* VPS nodes in parallel (up to your configured limit).
-2. The fastest node to complete the TCP handshake with GitHub wins.
-3. The local proxy immediately pipes your browser data through this winning node, and destroys the sockets on the slower nodes.
-4. The winning node is cached for `github.com` for 5 minutes to keep your session stable.
-
----
-
-## 💻 System-wide Routing
-
-To route all traffic from your laptop through the VPN, toggle the **System VPN State** switch in the dashboard.
-- **Enabled**: Updates the Windows Internet Options registry to route all HTTP/HTTPS/SOCKS traffic through `127.0.0.1:1080`. Most desktop applications (Chrome, Firefox, Spotify, Slack, Discord) will respect this immediately.
-- **Disabled**: Restores standard Windows network routing. You can still manually configure specific apps (like proxy extensions) to point to SOCKS5 `127.0.0.1:1080`.
+* **Why does the Windows tray icon show "Wi-Fi" rather than "Ethernet/VPN" when the VPN is active?**
+  Commercial VPN clients install virtual TUN/TAP network adapters and route the entire OS default gateway (`0.0.0.0/0`) through the adapter. Windows detects this and changes the icon.
+  In this custom VPN, the routing is split-tunnel. Traffic only goes through the WireGuard interface when it hits the local SOCKS5 proxy (`127.0.0.1:1080`). Since the raw OS networking still passes through your physical network interface, Windows displays the physical Wi-Fi connection icon. This split-tunneling is a **requirement** for TCP Handshake Racing across multiple concurrent interfaces to function.

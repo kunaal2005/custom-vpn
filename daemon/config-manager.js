@@ -99,6 +99,25 @@ function validateNodeData(node, isUpdate = false) {
       errors.push("Invalid 'password': must be a string under 100 characters.");
     }
   }
+
+  if (node.sshUser !== undefined && node.sshUser !== null) {
+    if (typeof node.sshUser !== 'string' || node.sshUser.length > 100) {
+      errors.push("Invalid 'sshUser': must be a string under 100 characters.");
+    }
+  }
+
+  if (node.sshKeyPath !== undefined && node.sshKeyPath !== null) {
+    if (typeof node.sshKeyPath !== 'string' || node.sshKeyPath.length > 500) {
+      errors.push("Invalid 'sshKeyPath': must be a string under 500 characters.");
+    }
+  }
+
+  if (node.ip !== undefined && node.ip !== null) {
+    const hostRegex = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$|^(([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.)*([A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9\-]*[A-Za-z0-9])$/;
+    if (typeof node.ip !== 'string' || !hostRegex.test(node.ip)) {
+      errors.push("Invalid 'ip': must be a valid public IP address or domain name.");
+    }
+  }
   
   if (node.enabled !== undefined) {
     if (typeof node.enabled !== 'boolean') {
@@ -225,7 +244,10 @@ function addNode(node) {
     country: node.country,
     flag: node.flag || '🌐',
     username: node.username || null,
-    password: node.password || null
+    password: node.password || null,
+    sshUser: node.sshUser || null,
+    sshKeyPath: node.sshKeyPath || null,
+    ip: node.ip || null
   };
   currentConfig.nodes.push(newNode);
   saveConfig();
@@ -245,6 +267,9 @@ function updateNode(nodeId, updatedFields) {
     if (updatedFields.flag !== undefined) fields.flag = updatedFields.flag;
     if (updatedFields.username !== undefined) fields.username = updatedFields.username;
     if (updatedFields.password !== undefined) fields.password = updatedFields.password;
+    if (updatedFields.sshUser !== undefined) fields.sshUser = updatedFields.sshUser;
+    if (updatedFields.sshKeyPath !== undefined) fields.sshKeyPath = updatedFields.sshKeyPath;
+    if (updatedFields.ip !== undefined) fields.ip = updatedFields.ip;
     if (updatedFields.enabled !== undefined) fields.enabled = updatedFields.enabled;
     if (updatedFields.status !== undefined) fields.status = updatedFields.status;
     if (updatedFields.latency !== undefined) fields.latency = updatedFields.latency;
