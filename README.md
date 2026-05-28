@@ -2,6 +2,8 @@
 
 An intelligent, multi-hop SOCKS5 routing gateway over WireGuard featuring **TCP Handshake Racing with SOCKS5 RTT Compensation** (Happy Eyeballs across multiple geographic nodes) and a premium glassmorphic dashboard.
 
+![Custom VPN Dashboard](assets/dashboard_main.png)
+
 ---
 
 ## 🌟 Key Architecture & How It Works
@@ -29,6 +31,8 @@ To make routing truly dynamic and optimal, our proxy engine implements **SOCKS5 
    $$\text{Estimated Data RTT} = \text{Total Handshake Duration} - 3 \times \text{Client-to-VPS Latency}$$
 4. **Optimal Route Caching**: The node with the lowest Estimated RTT is cached for that domain. All subsequent connections to that domain (which happen instantly as a web page loads scripts, styles, images) are routed directly through that optimal node.
 5. **Leak Prevention**: Sockets of non-winning connections are immediately destroyed to prevent socket and memory leaks.
+
+![Intelligent Route Logs](assets/route_logs.jpg)
 
 ---
 
@@ -78,6 +82,8 @@ You can set up as many nodes as you want. For each VPS, perform the following st
 For each node, ensure the following inbound ports are allowed in your network security group:
 - **`22` (TCP)**: SSH Management Access.
 - **`51820 + ID` (UDP)**: WireGuard Handshake port (e.g., `51821` for Node 1, `51823` for Node 3).
+
+![Azure VPS Nodes](assets/azure_nodes.png)
 
 ---
 
