@@ -4,6 +4,10 @@ This diagram visualizes how traffic flows from your local applications, through 
 
 ## Architecture Diagram
 
+![VPN Architecture Diagram](file:///d:/PROGRAMING/vpn/vpn_architecture.png)
+
+### Mermaid Flowchart Representation
+
 ```mermaid
 graph TD
     classDef client fill:#1E293B,stroke:#38BDF8,stroke-width:2px,color:#F8FAFC;
